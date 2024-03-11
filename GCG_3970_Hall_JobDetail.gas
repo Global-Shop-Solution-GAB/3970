@@ -1,0 +1,438 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+Variable.Global.sFiles.Declare(String)
+Variable.Global.sExceptions.Declare(String)
+Variable.Global.sJobUp.Declare(String)
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.SetErrorHandler("Main_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+'Created for Hall Indrustries by SKC on 5/13/15
+'GAB Script that will open an ftp connection to get an excel file.
+'The file will need to be read for Job information if the seq is 995000 then a Job Detail record will need
+'to be written only if the job operations table has a 995000 sequence.  If there are any exceptions then they
+'will need to be written to a log file.  Use UPLJOBDT to upload the job detail information.
+
+V.Local.bRet.Declare(Boolean)
+V.Local.bRetOOCalc.Declare(Boolean)
+V.Local.bFound.Declare(Boolean)
+V.Local.dNextTime.Declare(Date)
+V.Local.sOpenTask.Declare(String)
+V.Local.sNow.Declare(String)
+V.Local.sComplete.Declare(String)
+V.Local.sErrorFile.Declare(String)
+V.Local.sInuse.Declare(String)
+V.Local.iHour.Declare(Long)
+V.Local.iPid.Declare(Long)
+
+F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+
+F.Intrinsic.Control.AddEventHandler("FTPDirList","FTPDirEvent")
+
+F.Intrinsic.Control.CallSub(Ftplogon)
+F.Intrinsic.Control.CallSub(Listdir)
+F.Intrinsic.String.Build("{0}\Import\Inuse",V.Caller.FilesDir,V.Local.sInuse)
+F.Intrinsic.File.DirExists(V.Local.sInuse,V.Local.bRet)
+F.Intrinsic.Control.If(V.Local.bRet,=,False)
+	F.Intrinsic.File.CreateDir(V.Local.sInuse)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.CallSub(Downloadfiles)
+
+'********************************************************************************
+F.Automation.MSExcel.CheckPresence(V.Local.bRet)
+F.Automation.OOGeneral.CheckPresence(V.Local.bRetOOCalc)
+F.Intrinsic.Control.If(V.Local.bRet,=,True)
+	F.Intrinsic.Control.CallSub(Excel)
+F.Intrinsic.Control.ElseIf(V.Local.bRetOOCalc,=,True)
+	'Will need to call OOCalc
+	F.Intrinsic.Control.CallSub(Oocalc)
+F.Intrinsic.Control.Else
+	'Will need a program installed.
+	F.Intrinsic.Debug.SetLA("Missing Excel/OOCalc")
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Build("{0}\Import\Exceptions",V.Caller.FilesDir,V.Local.sErrorFile)
+F.Intrinsic.String.Build("{0}",V.Caller.FilesDir,V.Local.sComplete)
+F.Intrinsic.String.DelimitedStringToCSV(v.Global.sExceptions,"|","*!*",v.Global.sExceptions)
+
+F.Intrinsic.File.DirExists(V.Local.sErrorFile,V.Local.bRet)
+F.Intrinsic.Control.If(V.Local.bRet,=,False)
+	F.Intrinsic.File.CreateDir(V.Local.sErrorFile)
+F.Intrinsic.Control.EndIf
+
+V.Local.sNow.Set(V.Ambient.Now)
+F.Intrinsic.String.Replace(V.Local.sNow,"/","_",V.Local.sNow)
+F.Intrinsic.String.Replace(V.Local.sNow,":","_",V.Local.sNow)
+
+F.Intrinsic.String.Build("{0}\Error{1}.csv",V.Local.sErrorFile,V.Local.sNow,V.Local.sErrorFile)
+F.Intrinsic.File.String2File(V.Local.sErrorFile,V.Global.sExceptions)
+
+F.Intrinsic.File.DirExists(V.Local.sComplete,V.Local.bRet)
+F.Intrinsic.Control.If(V.Local.bRet,=,False)
+	F.Intrinsic.File.CreateDir(V.Local.sComplete)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Build("{0}\JOBDETL.TXT",V.Local.sComplete,V.Local.sComplete)
+F.Intrinsic.File.String2File(V.Local.sComplete,V.Global.sJobUp)
+
+F.Global.General.CallWrapperSync(50,"UPLJOBDT/a")
+
+' get difference in time between now and 11:59
+F.Intrinsic.Date.ConvertTString("2359","HHNN",V.Local.dNextTime)
+F.Intrinsic.Date.DateDiff("N",V.Ambient.Time,V.Local.dNextTime,V.Local.iHour)
+
+' if within 15 minuntes of 11:59 pm, go ahead and end for the day.
+F.Intrinsic.Control.If(V.Local.iHour,<=,15)
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndIf
+
+' sleep for 15 minutes, then have the script call itself, Asynchronously.  The next session will start and the current session will end.
+F.Intrinsic.UI.Sleep(900)
+
+F.Intrinsic.String.Build("{0}\GAB\GAS\GCG_Hall_JobDetail.gas",V.Caller.PluginsDir,V.Local.sOpenTask)
+F.Intrinsic.File.Exists(V.Local.sOpenTask,V.Local.bFound)
+F.Intrinsic.Control.If(V.Local.bFound,=,True)
+	F.Global.General.CallAsyncGAS(V.Local.sOpenTask,V.Local.iPID)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Main.End
+
+Program.Sub.FTPDirEvent.Start
+F.Intrinsic.Control.SetErrorHandler("FTPDirEvent_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.bFile.Declare(Boolean)
+
+F.Intrinsic.Variable.ArgExists("FileName",V.Local.bFile)
+F.Intrinsic.Control.If(V.Local.bFile,=,True)
+	F.Intrinsic.Control.If(V.Global.sFiles,=,"")
+		V.Global.sFiles.Set(V.Args.FileName)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.String.Build("{0}*!*{1}",V.Global.sFiles,V.Args.FileName,V.Global.sFiles)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("FTPDirEvent_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.FTPDirEvent.End
+
+Program.Sub.Excel.Start
+F.Intrinsic.Control.SetErrorHandler("Excel_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.sFileName.Declare(String)
+V.Local.sTarget.Declare(String)
+V.Local.sJobInfo.Declare(String)
+V.Local.sJobRow.Declare(String)
+V.Local.sWorkOrder.Declare(String)
+V.Local.sDate.Declare(String)
+V.Local.sJobDetail.Declare(String)
+V.Local.sSql.Declare(String)
+V.Local.iCount.Declare(Long)
+V.Local.iJobCount.Declare(Long)
+V.Local.iRet.Declare(Long)
+V.Local.fAmount.Declare(Float)
+
+'v.Global.sFiles.Set("C:\Users\stryon\Desktop\Hall Industries\Copy of Sample Report.xlsx")
+'F.Intrinsic.String.Split(v.Global.sFiles, "*!*", v.Local.sFileName)
+'Read each spreadsheet
+F.Intrinsic.Control.For(V.Local.iCount,0,V.Global.sFiles.UBound,1)
+			
+	F.Intrinsic.String.Build("{0}\Import\Inuse\{1}",V.Caller.FilesDir,V.Global.sFiles(v.Local.iCount),V.Local.sFileName)
+	F.Automation.MSExcel.ReadSpreadsheet(V.Local.sFileName(v.Local.iCount),V.Local.sJobInfo)
+	'Split based on sheet
+	F.Intrinsic.String.Split(V.Local.sJobInfo,"&^&",V.Local.sJobInfo)
+	'Split each row
+	F.Intrinsic.String.Split(V.Local.sJobInfo(0),"$!$",V.Local.sJobInfo)
+	'Loop through each row
+	F.Intrinsic.Control.For(V.Local.iJobCount,1,V.Local.sJobInfo.UBound,1)
+		'Split the row
+		F.Intrinsic.String.Split(V.Local.sJobInfo(v.Local.iJobCount),"*!*",V.Local.sJobRow)
+		'Split the first cell to get the job and suffix
+		F.Intrinsic.String.Split(V.Local.sJobRow(0),"-",V.Local.sWorkOrder)
+
+		F.Intrinsic.Control.If(V.Local.sWorkOrder(0).Trim,!=,"")
+			F.Intrinsic.String.Build("Select * from Job_Operations where Job = '{0}' and Suffix = '{1}' and Seq = '995000'",V.Local.sWorkOrder(0).Trim,V.Local.sWorkOrder(1).Trim,V.Local.sSql)
+			F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSql)
+			F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+				'Create upload file
+				F.Intrinsic.String.RPad(V.Local.sWorkOrder(0)," ",6,V.Local.sWorkOrder(0))
+				F.Intrinsic.String.RPad(V.Local.sWorkOrder(1)," ",3,V.Local.sWorkOrder(1))
+				F.Intrinsic.String.Split(V.Local.sJobRow(1)," ",V.Local.sDate)
+				F.Intrinsic.String.Format(V.Local.sDate(0),"mmddyy",V.Local.sDate(0))
+				F.Intrinsic.String.Build("{0}{1}995000{2}{3}",V.Local.sWorkOrder(0),V.Local.sWorkOrder(1),V.Local.sDate(0),V.Local.sJobRow(5),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",51,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.sJobRow(3),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",150,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.sJobRow(4),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",170,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.sJobRow(8),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",219,V.Local.sJobDetail)
+				F.Intrinsic.Math.Mult(V.Local.sJobRow(8),V.Local.sJobRow(9),V.Local.fAmount)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.fAmount,V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",286,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}M",V.Local.sJobDetail,V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",655,V.Local.sJobDetail)
+
+				F.Intrinsic.String.Concat(V.Global.sJobUp,V.Local.sJobDetail,V.Ambient.NewLine,V.Global.sJobUp)
+			F.Intrinsic.Control.Else
+				'Add to error file
+				F.Intrinsic.String.Concat(V.Global.sExceptions,"|",V.Local.sJobInfo(v.Local.iJobCount),V.Global.sExceptions)
+			F.Intrinsic.Control.EndIf
+			F.ODBC.conx!rst.Close
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.iJobCount)
+		F.Intrinsic.String.Build("{0}\Import\Complete\{1}",V.Caller.FilesDir,V.Global.sFiles(v.Local.iCount),V.Local.sTarget)
+	F.Intrinsic.File.MoveFile(V.Local.sFileName,V.Local.sTarget,V.Local.iRet)
+F.Intrinsic.Control.Next(V.Local.iCount)
+
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Excel_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Excel.End
+
+Program.Sub.OOCalc.Start
+F.Intrinsic.Control.SetErrorHandler("OOCalc_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.sFileName.Declare(String)
+V.Local.sTarget.Declare(String)
+V.Local.sJobInfo.Declare(String)
+V.Local.sJobRow.Declare(String)
+V.Local.sWorkOrder.Declare(String)
+V.Local.sDate.Declare(String)
+V.Local.sJobDetail.Declare(String)
+V.Local.sSql.Declare(String)
+V.Local.iCount.Declare(Long)
+V.Local.iJobCount.Declare(Long)
+V.Local.iRet.Declare(Long)
+V.Local.fAmount.Declare(Float)
+
+'v.Global.sFiles.Set("C:\Users\stryon\Desktop\Hall Industries\Copy of Sample Report.xlsx")
+'F.Intrinsic.String.Split(v.Global.sFiles, "*!*", v.Local.sFileName)
+'Read each spreadsheet
+F.Intrinsic.Control.For(V.Local.iCount,0,V.Local.sFileName.UBound,1)
+	F.Intrinsic.String.Build("{0}\Import\Inuse\{1}",V.Caller.FilesDir,V.Global.sFiles(v.Local.iCount),V.Local.sFileName)
+	F.Automation.OOCalc.ReadSpreadsheet(V.Local.sFileName(v.Local.iCount),True,V.Local.sJobInfo)
+	'Split based on sheet
+	F.Intrinsic.String.Split(V.Local.sJobInfo,"&^&",V.Local.sJobInfo)
+	'Split each row
+	F.Intrinsic.String.Split(V.Local.sJobInfo(0),"$!$",V.Local.sJobInfo)
+	'Loop through each row
+	F.Intrinsic.Control.For(V.Local.iJobCount,1,V.Local.sJobInfo.UBound,1)
+		'Split the row
+		F.Intrinsic.String.Split(V.Local.sJobInfo(v.Local.iJobCount),"*!*",V.Local.sJobRow)
+		'Split the first cell to get the job and suffix
+		F.Intrinsic.String.Split(V.Local.sJobRow(0),"-",V.Local.sWorkOrder)
+
+		F.Intrinsic.Control.If(V.Local.sWorkOrder(0).Trim,!=,"")
+			F.Intrinsic.String.Build("Select * from Job_Operations where Job = '{0}' and Suffix = '{1}' and Seq = '995000'",V.Local.sWorkOrder(0).Trim,V.Local.sWorkOrder(1).Trim,V.Local.sSql)
+			F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSql)
+			F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+				'Create upload file
+				F.Intrinsic.String.RPad(V.Local.sWorkOrder(0)," ",6,V.Local.sWorkOrder(0))
+				F.Intrinsic.String.RPad(V.Local.sWorkOrder(1)," ",3,V.Local.sWorkOrder(1))
+				F.Intrinsic.String.Split(V.Local.sJobRow(1)," ",V.Local.sDate)
+				F.Intrinsic.String.Format(V.Local.sDate(0),"mmddyy",V.Local.sDate(0))
+				F.Intrinsic.String.Build("{0}{1}995000{2}{3}",V.Local.sWorkOrder(0),V.Local.sWorkOrder(1),V.Local.sDate(0),V.Local.sJobRow(5),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",51,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.sJobRow(3),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",150,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.sJobRow(4),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",170,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.sJobRow(8),V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",219,V.Local.sJobDetail)
+				F.Intrinsic.Math.Mult(V.Local.sJobRow(8),V.Local.sJobRow(9),V.Local.fAmount)
+				F.Intrinsic.String.Build("{0}{1}",V.Local.sJobDetail,V.Local.fAmount,V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",286,V.Local.sJobDetail)
+				F.Intrinsic.String.Build("{0}M",V.Local.sJobDetail,V.Local.sJobDetail)
+				F.Intrinsic.String.RPad(V.Local.sJobDetail," ",655,V.Local.sJobDetail)
+				F.Intrinsic.String.Concat(V.Global.sJobUp,V.Local.sJobDetail,V.Ambient.NewLine,V.Global.sJobUp)
+			F.Intrinsic.Control.Else
+				'Add to error file
+				F.Intrinsic.String.Concat(V.Global.sExceptions,"|",V.Local.sJobInfo(v.Local.iJobCount),V.Global.sExceptions)
+			F.Intrinsic.Control.EndIf
+			F.ODBC.conx!rst.Close
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.iJobCount)
+	F.Intrinsic.String.Build("{0}\Import\Complete\{1}",V.Caller.FilesDir,V.Global.sFiles(v.Local.iCount),V.Local.sTarget)
+	F.Intrinsic.File.MoveFile(V.Local.sFileName,V.Local.sTarget,V.Local.iRet)
+F.Intrinsic.Control.Next(V.Local.iCount)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("OOCalc_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.OOCalc.End
+
+Program.Sub.FTPLogon.Start
+F.Intrinsic.Control.SetErrorHandler("FTPLogon_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.bConnected.Declare(Boolean)
+
+F.Communication.FTP.ReadProperty("connected",V.Local.bConnected)
+F.Intrinsic.Control.If(V.Local.bConnected,=,False)
+	F.Communication.FTP.SetProperty("RemoteHost","ftp.supplypro.com")
+	F.Communication.FTP.SetProperty("User","HALLFTP")
+	F.Communication.FTP.SetProperty("Password","hallftp2015!")
+	F.Communication.FTP.Logon
+F.Intrinsic.Control.EndIf
+F.Intrinsic.UI.Sleep(10)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("FTPLogon_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.FTPLogon.End
+
+Program.Sub.ListDir.Start
+F.Intrinsic.Control.SetErrorHandler("ListDir_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.bConnected.Declare(Boolean)
+
+F.Communication.FTP.ReadProperty("Connected",V.Local.bConnected)
+F.Intrinsic.Control.DoUntil(V.Local.bConnected,=,True)
+	F.Intrinsic.Control.CallSub(Ftplogon)
+	F.Communication.FTP.ReadProperty("Connected",V.Local.bConnected)
+F.Intrinsic.Control.Loop
+
+F.Intrinsic.Control.If(V.Local.bConnected,=,True)
+'	F.Communication.FTP.SetProperty("RemotePath", "ROOT")
+	F.Communication.FTP.ListDirectory
+	F.Intrinsic.UI.Sleep(15)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("ListDir_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.ListDir.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.SetErrorHandler("Unload_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+F.ODBC.Connection!conx.Close
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unload_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Unload.End
+
+Program.Sub.DownloadFiles.Start
+F.Intrinsic.Control.SetErrorHandler("DownloadFiles_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.bConnected.Declare(Boolean)
+V.Local.iCount.Declare(Long)
+V.Local.sLocFile.Declare(String)
+
+
+F.Communication.FTP.ReadProperty("Connected",V.Local.bConnected)
+F.Intrinsic.Control.DoUntil(V.Local.bConnected,=,True)
+	F.Intrinsic.Control.CallSub(Ftplogon)
+	F.Communication.FTP.ReadProperty("Connected",V.Local.bConnected)
+F.Intrinsic.Control.Loop
+
+F.Intrinsic.Control.If(V.Local.bConnected,=,True)
+	'Check to see there are files
+	F.Intrinsic.Control.If(V.Global.sFiles,!=,"")
+		F.Intrinsic.String.Split(V.Global.sFiles,"*!*",V.Global.sFiles)
+		F.Intrinsic.Control.For(V.Local.iCount,0,V.Global.sFiles.UBound,1)
+			F.Intrinsic.String.Build("{0}\Import\Inuse\{1}",V.Caller.FilesDir,V.Global.sFiles(v.Local.iCount),V.Local.sLocFile)
+			F.Communication.FTP.SetProperty("LocalFile",V.Local.sLocFile)
+			F.Communication.FTP.SetProperty("RemoteFile",V.Global.sFiles(v.Local.iCount))
+			F.Communication.FTP.SetProperty("TransferMode",2)
+			F.Communication.FTP.SetProperty("Overwrite",True)
+			F.Communication.FTP.Download
+			F.Intrinsic.UI.Sleep(30)
+			F.Communication.FTP.DeleteFile(V.Global.sFiles(v.Local.iCount))
+		F.Intrinsic.Control.Next(V.Local.iCount)
+	
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("DownloadFiles_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_3970_Hall_JobDetail.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.DownloadFiles.End
+
+Program.Sub.Comments.Start
+${$0$}$$}$SKT$}$5/13/2015 10:39:19 AM
+Program.Sub.Comments.End
+
